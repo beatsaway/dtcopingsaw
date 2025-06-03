@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Coping Saw Viewer</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #222; }
+        #scene-container { width: 100vw; height: 100vh; display: block; }
+    </style>
+</head>
+<body>
+    <div style="position:fixed;top:8px;left:8px;z-index:1001;font-family:sans-serif;font-size:13px;line-height:1.5;">
+        <button id="reset-saw" style="margin-bottom:6px;">Reset</button>
+        <!-- Cut button removed -->
+        <div>
+            <label>X rot <input id="slider-x" type="range" min="-180" max="180" value="0" style="width:180px;"><span id="value-x">0</span></label>
+        </div>
+        <div style="margin-top:2px;">
+            <label>Y rot <input id="slider-y" type="range" min="-180" max="180" value="0" style="width:180px;"><span id="value-y">0</span></label>
+        </div>
+        <div style="margin-top:2px;">
+            <label>Z rot <input id="slider-z" type="range" min="-180" max="180" value="0" style="width:180px;"><span id="value-z">0</span></label>
+        </div>
+        <div style="margin-top:2px;">
+            <label>X pos <input id="slider-pos-x" type="range" min="-2" max="2" value="-0.22" step="0.01" style="width:180px;"><span id="value-pos-x">-0.22</span></label>
+        </div>
+        <div style="margin-top:2px;">
+            <label>Y pos <input id="slider-pos-y" type="range" min="-2" max="2" value="0" step="0.01" style="width:180px;"><span id="value-pos-y">0</span></label>
+        </div>
+        <div style="margin-top:2px;">
+            <label>Z pos <input id="slider-pos-z" type="range" min="-2" max="2" value="0" step="0.01" style="width:180px;"><span id="value-pos-z">0</span></label>
+        </div>
+        <div style="margin-top:2px;">
+            <label>Wood thickness <input id="slider-wood-width" type="range" min="0.01" max="0.5" value="0.03" step="0.001" style="width:180px;"><span id="value-wood-width">0.03</span></label>
+        </div>
+        <div style="margin-top:2px;">
+            <label>Cutting speed<input id="slider-cut-amplitude" type="range" min="0" max="0.3" value="0" step="0.001" style="width:180px;"><span id="value-cut-amplitude">0</span></label>
+        </div>
+        <button id="emoji-texture-btn" style="margin-top:6px;">Emoji Texture</button>
+        <div style="margin-top:6px;"><label><input type="checkbox" id="cutting-animation-checkbox"> Cutting animation</label></div>
+    </div>
+    <div id="scene-container"></div>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.152.2/build/three.module.min.js",
+                "three/addons/": "https://unpkg.com/three@0.152.2/examples/jsm/"
+            }
+        }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+        // Scene setup
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87CEEB);
+
+        // Camera
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(-0.5, 0, 2.9);
+
+        // Renderer
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.getElementById('scene-container').appendChild(renderer.domElement);
+
+        // Controls
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.target.set(0, 0, 0);
+        controls.update();
+
+        // Lighting
+        scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+        const keyLight = new THREE.DirectionalLight(0xffffff, 1.2);
+        keyLight.position.set(5, 8, 6);
+        scene.add(keyLight);
+        const fillLight = new THREE.DirectionalLight(0xffffff, 0.5);
+        fillLight.position.set(-4, 2, 4);
+        scene.add(fillLight);
+        const backLight = new THREE.DirectionalLight(0xffffff, 0.3);
+        backLight.position.set(0, 4, -6);
+        scene.add(backLight);
+
+        // Wood texture loader
+        const textureLoader = new THREE.TextureLoader();
+        const woodTexture = textureLoader.load('https://threejs.org/examples/textures/hardwood2_diffuse.jpg', (tex) => {
+            tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+            tex.repeat.set(0.2, 0.1);
+        });
+        let emojiTexture = null;
+        function createEmojiTexture(emoji = '🐱', size = 256) {
+            const canvas = document.createElement('canvas');
+            canvas.width = canvas.height = size;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#fff8e1';
+            ctx.fillRect(0, 0, size, size);
+            ctx.font = `${size * 0.9}px serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(emoji, size / 2, size / 2);
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+            texture.repeat.set(1, 1);
+            return texture;
+        }
+        document.getElementById('emoji-texture-btn').onclick = function() {
+            if (!emojiTexture) emojiTexture = createEmojiTexture('🐱');
+            if (woodMesh && woodMesh.material) {
+                woodMesh.material.map = woodMesh.material.map === emojiTexture ? woodTexture : emojiTexture;
+                woodMesh.material.needsUpdate = true;
+            }
+        };
+
+        // Load GLB model
+        const loader = new GLTFLoader();
+        let copingSawModel = null;
+        let woodMesh = null;
+        let cutStartTime = performance.now();
+        const sliderCutAmplitude = document.getElementById('slider-cut-amplitude');
+        let cutAmplitude = Number(sliderCutAmplitude.value); // max x movement, synced to slider
+        let cutFrequency = 1.5; // oscillations per second (slower)
+        let cutOriginalX = null;
+        let isCutting = false;
+        loader.load('Coping_Saw_new.glb', (gltf) => {
+            const model = gltf.scene;
+            const box = new THREE.Box3().setFromObject(model);
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+            const maxDim = Math.max(size.x, size.y, size.z);
+            const scale = 1.5 / maxDim;
+            model.position.sub(center);
+            model.position.y = 0;
+            model.position.x = 0;
+            model.position.z = 0;
+            model.scale.setScalar(scale);
+            model.rotation.set(-Math.PI/2, 0, 0);
+
+            // Set basic light grey metallic material for metal parts (or all meshes if unsure)
+            model.traverse((child) => {
+                if (child.isMesh) {
+                    // Only override if not already textured
+                    if (!child.material.map) {
+                        child.material = new THREE.MeshStandardMaterial({
+                            color: 0xcccccc,
+                            metalness: 0.8,
+                            roughness: 0.3
+                        });
+                    }
+                }
+            });
+
+            scene.add(model);
+            // Add a cuboid wood mesh below the coping saw
+            const woodWidth = size.x * scale * 0.03;
+            const woodHeight = size.y * scale * 12;
+            const woodDepth = size.z * scale * 1.5;
+            const woodGeometry = new THREE.BoxGeometry(woodWidth, woodHeight, woodDepth);
+            const woodMaterial = new THREE.MeshStandardMaterial({ map: woodTexture, roughness: 0.7, metalness: 0.1 });
+            woodMesh = new THREE.Mesh(woodGeometry, woodMaterial);
+            // Place wood just below the saw's bounding box
+            woodMesh.position.set(0, -0.48, 0);
+
+            scene.add(woodMesh);
+
+            controls.target.set(0, 0, 0);
+            controls.update();
+            copingSawModel = model;
+            // Set cutOriginalX after model and slider are ready
+            sliderPosX.value = -0.22;
+            document.getElementById('value-pos-x').textContent = '-0.22';
+            copingSawModel.position.x = Number(sliderPosX.value);
+            cutOriginalX = Number(sliderPosX.value);
+        }, undefined, (err) => {
+            console.error('Error loading model:', err);
+        });
+
+        // Handle resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            // Cutting animation logic in main loop
+            if (isCutting && copingSawModel && cutOriginalX !== null) {
+                const now = performance.now();
+                const t = (now - cutStartTime) / 1000;
+                const x = cutOriginalX + Math.sin(t * Math.PI * 2 * cutFrequency) * cutAmplitude;
+                sliderPosX.value = x.toFixed(3);
+                copingSawModel.position.x = x;
+            }
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // Slider event listeners for rotation
+        function degToRad(deg) { return deg * Math.PI / 180; }
+        const sliderX = document.getElementById('slider-x');
+        const sliderY = document.getElementById('slider-y');
+        const sliderZ = document.getElementById('slider-z');
+        [sliderX, sliderY, sliderZ].forEach((slider, idx) => {
+            slider.addEventListener('input', () => {
+                if (copingSawModel) {
+                    copingSawModel.rotation.x = degToRad(Number(sliderX.value));
+                    copingSawModel.rotation.y = degToRad(Number(sliderY.value));
+                    copingSawModel.rotation.z = degToRad(Number(sliderZ.value));
+                }
+            });
+        });
+
+        // Position slider event listeners
+        const sliderPosX = document.getElementById('slider-pos-x');
+        const sliderPosY = document.getElementById('slider-pos-y');
+        const sliderPosZ = document.getElementById('slider-pos-z');
+        [sliderPosX, sliderPosY, sliderPosZ].forEach((slider, idx) => {
+            slider.addEventListener('input', () => {
+                if (copingSawModel) {
+                    copingSawModel.position.x = Number(sliderPosX.value);
+                    copingSawModel.position.y = Number(sliderPosY.value);
+                    copingSawModel.position.z = Number(sliderPosZ.value);
+                }
+            });
+        });
+
+        // Reset button logic
+        document.getElementById('reset-saw').onclick = function() {
+            // Set default slider values
+            sliderX.value = -90;
+            sliderY.value = 0;
+            sliderZ.value = 0;
+            sliderPosX.value = -0.22;
+            sliderPosY.value = 0;
+            sliderPosZ.value = 0;
+            // Update model
+            if (copingSawModel) {
+                copingSawModel.rotation.x = degToRad(-90);
+                copingSawModel.rotation.y = 0;
+                copingSawModel.rotation.z = 0;
+                copingSawModel.position.x = -0.22;
+                copingSawModel.position.y = 0;
+                copingSawModel.position.z = 0;
+            }
+        };
+
+        // Wood thickness slider logic
+        const sliderWoodWidth = document.getElementById('slider-wood-width');
+        let initialWoodWidth = null;
+        sliderWoodWidth.addEventListener('input', () => {
+            if (woodMesh && woodMesh.geometry) {
+                // Save initial value if not set
+                if (!initialWoodWidth) initialWoodWidth = woodMesh.geometry.parameters.width;
+                // Replace geometry with new width
+                const newWidth = Number(sliderWoodWidth.value);
+                const oldGeom = woodMesh.geometry;
+                woodMesh.geometry = new THREE.BoxGeometry(newWidth, oldGeom.parameters.height, oldGeom.parameters.depth);
+            }
+        });
+
+        // Cut amplitude slider logic
+        sliderCutAmplitude.addEventListener('input', () => {
+            cutAmplitude = Number(sliderCutAmplitude.value);
+        });
+
+        // Add checkbox event listener
+        const cuttingAnimationCheckbox = document.getElementById('cutting-animation-checkbox');
+        cuttingAnimationCheckbox.checked = false;
+        cuttingAnimationCheckbox.addEventListener('change', () => {
+            isCutting = cuttingAnimationCheckbox.checked;
+            if (isCutting) cutStartTime = performance.now();
+        });
+
+        // Add slider value update logic
+        function updateSliderValue(sliderId, valueId, toFixed = null) {
+            const slider = document.getElementById(sliderId);
+            const valueSpan = document.getElementById(valueId);
+            function setValue() {
+                valueSpan.textContent = toFixed !== null ? Number(slider.value).toFixed(toFixed) : slider.value;
+            }
+            slider.addEventListener('input', setValue);
+            setValue();
+        }
+        updateSliderValue('slider-x', 'value-x');
+        updateSliderValue('slider-y', 'value-y');
+        updateSliderValue('slider-z', 'value-z');
+        updateSliderValue('slider-pos-x', 'value-pos-x', 2);
+        updateSliderValue('slider-pos-y', 'value-pos-y', 2);
+        updateSliderValue('slider-pos-z', 'value-pos-z', 2);
+        updateSliderValue('slider-wood-width', 'value-wood-width', 3);
+        updateSliderValue('slider-cut-amplitude', 'value-cut-amplitude', 3);
+    </script>
+</body>
+</html>
